@@ -1,95 +1,136 @@
-# Initial implementation and release gates
+# Implementation status and release gates
 
-This document describes the implementation branch, not a deployed connector. The
-[design](DESIGN.md) is the target architecture. The historical design document's
-“documentation only” status refers to that earlier delivery; it has not been
-rewritten to imply operational acceptance.
+This is an undeployed, single-owner development implementation. The
+[design](DESIGN.md) remains the target architecture; its historical
+“documentation only” status describes the earlier design delivery.
 
-## Delivered boundary
+## Implemented boundaries
 
-The dependency direction is adapters → application → domain. `internal/bootstrap`
-composes an HTTP handler from supplied ports. There is deliberately no production
-`main`, permissive demo server, sample bearer token, in-memory production quota
-fallback, secret-store selection or live account bootstrap script.
+Dependencies point inward: adapters → application → domain. No application
+service depends on SQLite, the MCP SDK, HTTP DTOs or a selected cloud vault.
 
-| Area | Implemented | Remaining before live use |
+| Area | Implemented and synthetically tested | Still required before live use |
 | --- | --- | --- |
-| Access policy | Exact issuer/subject/tenant tuple, one owned connection, explicit concrete budget IDs, immutable versioned grants, authorization before reads and after upstream/snapshot work | Durable administrative transactions and approved owner/budget configuration |
-| Financial values | Typed IDs, integer milliunits and exact decimal/string JSON, checked arithmetic, calendar dates, split/transfer references, distinct scheduled/recorded models, null/absent/redacted text | Contract review against approved account settings and any additional target fields |
-| Inquiry | Eight typed query families, strict tool argument keys/types, bounded queue/concurrency, identical in-flight read coalescing, filtered budget list | Operational load measurements; no stale-data mode or persistent response cache |
-| Snapshots | Memory-only immutable pages, exact scope/query/limit binding, hashed cursor lookup, deterministic replay, absolute ≤5-minute TTL, byte/count bounds, eviction/restart invalidation | Optional periodic expired-object cleanup; correctness never depends on cleanup timing |
-| MCP | Official SDK, stateless Streamable HTTP, eight read-only tools, bounded structured results, generic sanitized errors | Actual target-host protocol/auth interoperability acceptance |
-| Inbound auth | JOSE access-token signatures, pinned algorithms/issuer/audience, expiry/nbf/scope, explicit access-token type, static keys or bounded pinned HTTPS JWKS, resource metadata/challenges | Approved mature issuer and client registration; no authorization server or dynamic registration implementation |
-| HTTP | Exact host/origin allowlists, body/deadline/server limits, no trust in forwarded headers, owner check on every MCP method, content-free health route | Approved TLS ingress/listener and network architecture |
-| YNAB reads | Fixed `/v1/plans` GET-only destination, DTO allowlist, currency metadata required, separate settings observations disclosed, no redirects, response/decompression limits, cancellation, 429 cooldown port | Durable token and quota adapters, live schema/account acceptance |
-| YNAB OAuth | Separate fixed-host exchange adapter using maintained OAuth library; S256, read-only scope, one-attempt exchanges, bounded response validation, opaque/redacted in-memory credentials | Owner-bound expiring single-use state/callback service, protected complete-bundle persistence/readback/reload, durable refresh coordinator |
-| Connection lifecycle | Pure version/fence transitions for prepared, request-started, secret-saved, committed and ambiguous recovery; disables/reconnects invalidate stale candidates | Repository implementation and crash-injection tests at real storage/network boundaries |
-| Upstream admission | Pure rolling-window model, 180/hour headroom, persisted-reservation contract, cooldown, rollback protection and full-window missing-ledger backoff | Selected durable repository and atomic concurrency/restart tests |
+| Access policy | Exact issuer/subject/tenant; one owned connection; versioned explicit budget grants; pre-read and pre-disclosure checks | Approved owner, budget and field configuration |
+| Financial inquiry | Eight read-only tools, exact money, dates/IDs, distinct scheduled/recorded models, split preservation, strict schemas, bounded queue/coalescing | Actual account/host contract acceptance and operational load measurements |
+| Snapshots | Memory-only immutable pages, opaque scope/query/version-bound cursors, replay, absolute ≤5-minute TTL, byte/count caps, expiry/eviction | Operational cleanup cadence; correctness never depends on cleanup timing |
+| Inbound OAuth/MCP | Official SDK, stateless Streamable HTTP, JOSE verification, bounded pinned JWKS, resource metadata/challenges, owner checks on all MCP requests | Approved compatible issuer/client registration and actual host authorization flow |
+| HTTP | Exact host/origin allowlists, request limits/deadlines, no trusted forwarding headers, content-free health route | Approved TLS ingress, listener and network architecture |
+| SQLite candidate | Single-owner initialization, atomic grant replacement, structurally validated connection transitions, version CAS, atomic policy-fenced activation/refresh, durable quota ledger, read-only inspection and explicit restored-backup handling | Production backend selection, approved durable volume, private directory, backup policy and operational validation |
+| Protected credentials | Complete opaque bundle, redacted generic serialization/logging, Tink AEAD boundary, immutable ciphertext records, exact authenticated readback, reference/version binding, clear remote-outage classification | Approved durable secret backend and independently controlled key authority, access policy, rotation and rollback protection |
+| Refresh lifecycle | One coalesced exchange, persisted/fenced phases before effects, full-pair readback before generation commit, lost-ack reconciliation, no uncertain replay, policy/disable/reconnect race checks | Trusted startup/dead-worker orchestration and provider-specific operational acceptance |
+| Owner consent callback | Random single-use expiring owner/session-bound state, S256 PKCE, exact callback, bounded attempts, immutable persistence and atomic policy-fenced activation | A separately reviewed HTTP/session adapter using an independently authenticated server session; no public callback route exists yet |
+| Upstream admission | Durable rolling reservations, 180/hour headroom, missing-ledger full-window cooldown, rollback protection, stable key across token rotation, 429 persistence even after downstream cancellation | Durable volume/recovery acceptance and visibility into externally consumed upstream quota |
+| YNAB adapters | Fixed GET-only financial routes, DTO projection, mandatory currency metadata, bounds, separate fixed-host single-attempt OAuth transport | Approved live OAuth application, protected client-secret loading and named budget consent |
+| Composition | Candidate read-handler wiring plus an offline read-only metadata-check executable | Production serving command and trustworthy startup recovery/key/vault configuration |
 
-## Important deliberate limitations
+## Important implementation choices
 
-- Single owner only. No subscriptions, tenant database, multi-user hosting, billing,
-  write tools, deployment, tunnel enrollment, provider configuration or live grants.
-- SQLite and Firestore remain choices, not implemented adapters. Passing a
-  process-local test repository to the composition API is **not** permission to
-  use it for production quota or credentials.
-- No fully wired live OAuth flow. The OAuth package intentionally does not export
-  refresh-token serialization or restore a complete persisted bundle. An approved
-  secret-store integration must be designed before that boundary is opened.
-- The caller of OAuth exchange must consume owner-bound single-use state and the
-  correct PKCE verifier. The caller of refresh must persist/fence the unresolved
-  attempt first. An ambiguous outcome requires reconnect; do not replay an old
-  credential object. Returned credentials do not themselves prove durable commit.
-- No automatic YNAB GET retry, 401 refresh, full response reuse or delta sync. Each
-  requested fresh read does a full bounded fetch; settings and financial data may
-  require two separately reserved GETs. This conservative foundation favors an
-  explicit error over replay or fabricated completeness.
-- Transaction dates are explicit inclusive bounds, limited to 366 days. Recorded
-  transaction results exclude pending items. Scheduled results describe the
-  upstream next occurrence, not every future recurrence.
-- All financial content remains in memory. A public response is still sensitive:
-  read-only controls do not prevent a permitted client from retaining/disclosing it.
-- Unknown issuer token profiles fail closed. The initial verifier accepts signed
-  `at+jwt` / `application/at+jwt` access tokens only; it rejects generic ID-token
-  `JWT` profiles and opaque tokens. Provider interoperability is a release gate.
-- SDK loopback-only Host heuristics are replaced only inside a constructor that
-  requires explicit host/origin admission. This supports a separately approved
-  reverse proxy without allowing arbitrary Host headers or trusting forwarding
-  headers. The raw `NewServer` protocol object is not a secure HTTP composition.
+### Control metadata
+
+SQLite is implemented as a **candidate**, not silently selected for deployment.
+Its schema stores explicit owner/grant/allowlist relationships and versioned,
+canonical bounded JSON for connection and quota aggregates. The aggregate JSON
+contains references and control state only, never tokens or financial payloads.
+This refines the design's proposed relational layout while preserving ownership,
+CAS and transaction boundaries. Only the current refresh attempt is retained;
+there is no general audit/event history or automatic secret-retirement job.
+
+`Open` is for authoritative current state. `OpenReadOnly` performs no migration or
+initialization. `OpenRestored` explicitly blocks potentially stale credentials
+and imposes conservative quota backoff while preserving disabled state. No local
+SQLite file can prove that it is not an old copy; backup provenance and external
+key/vault rollback authority remain operational requirements. See
+[recovery and deployment boundaries](OPERATIONS.md).
+
+### Protected credentials
+
+`credentials.CompleteBundle` carries the complete validated read-only pair.
+Generic JSON, formatting and structured logs redact it. Narrow export methods
+exist only for immediate encryption, a fenced OAuth refresh and the fixed YNAB
+read adapter. Go cannot guarantee erasure of copied strings.
+
+The encryption adapter takes an injected Tink primitive and immutable ciphertext
+backend. Production keys are neither created nor stored by this implementation.
+The local constructor is for local Tink AEAD only. Remote key services use the
+context-aware constructor and explicitly distinguish proven integrity failure
+from temporary unavailability; a KMS outage does not silently force reconnect.
+
+The exported memory ciphertext backend is conspicuously named for testing and is
+not durable. Integration tests additionally use a test-only fsynced ciphertext
+backend in a temporary directory, with keys kept exclusively in memory. Neither
+constitutes an approved production vault or key-management design.
+
+### Refresh and consent
+
+Every refresh metadata transition uses a repository operation that checks current
+owner policy and connection state **in one transaction**. External OAuth and
+secret-store work never runs inside retried SQL transactions. An unresolved
+`request_started` exchange is never stolen or replayed. Recovery may adopt an
+already persisted candidate; classifying a missing candidate requires exact
+stopped-worker evidence, and known live local workers cannot be claimed stopped.
+
+A callback consumes state before exchange and publishes only after complete
+protected persistence/readback and an atomic policy/connection comparison. State,
+verifiers, codes and authenticated session identifiers are not persisted in
+metadata. Pending flows are lost on restart and must begin again. Late or failed
+flows may leave unreferenced encrypted generations; no unapproved cleanup deletes
+them. The future session/HTTP adapter must enforce trusted principal/session
+binding and exact callback origin/path, not accept these from arbitrary clients.
 
 ## Verification scope
 
-Every automated test uses synthetic data and generated keys. Unit/contract tests
-cover domain money/date/identity invariants, unknown arguments/write dispatch,
-zero-upstream denial, revoked in-flight reads, cursor isolation and bounds,
-fixed GET routes/projections, OAuth failure behavior, signed-token denial cases,
-JWKS rotation/outage, HTTP admission and quota/refresh pure transitions.
+`make check` runs formatting, vet, all tests, the race detector and package builds.
+`make fuzz` exercises MCP arguments, protected bundle decoding, OAuth responses,
+JWT parsing and exact money. `make vuln` uses pinned govulncheck. These are
+point-in-time engineering checks, not a security certification.
 
-The integration test uses the real official SDK client and Streamable HTTP server,
-real signed synthetic access tokens, the real application service and memory
-snapshot store, and a synthetic inquiry gateway. YNAB HTTP mapping is tested
-separately with a mock transport; no test here claims a real issuer/YNAB account or
-OpenAI client connection worked.
+The test suite includes:
 
-Run `make check`, `make fuzz`, and `make vuln`. Vulnerability findings are a point-in-
-time result, not a security guarantee. Dependencies are pinned in `go.mod`/`go.sum`.
-No CI workflow is created or enabled in this branch. No durable-backend contract,
-real storage crash/recovery, production load or live end-to-end acceptance is
-claimed by a green unit/integration suite.
+- The official SDK client and Streamable HTTP server with signed synthetic access
+  tokens, the real read service and memory snapshots
+- Fixed YNAB HTTP-route/projection/response-bound tests with mock transports
+- SQLite ownership, transaction, CAS, corruption, reopen, quota and restored-state
+  contract tests; no external OAuth or secret call inside a SQL transaction
+- Concurrent refresh callers, all lifecycle checkpoint failures, lost commit/store
+  acknowledgments, disable/reconnect/policy races and stopped-worker recovery
+- Real SQLite plus encrypted synthetic ciphertext files for consent, rotation,
+  service/store reconstruction, and recovery from persisted refresh phases
+- Callback replay, owner/session/path mismatch, expiry, bounds and policy races
+- Credential confidentiality, substitution/tampering and key-service outage tests
 
-## Next implementation gates
+Persisted-state checkpoint tests model process loss at named boundaries. They do
+not claim hardware power-loss guarantees, a real cloud vault/key-service restart,
+a live issuer/YNAB connection, or actual OpenAI client interoperability. No CI
+workflow is created or enabled. No live credentials or account grants are used.
 
-1. Review this draft, select license, and choose the durable metadata/secret-store
-   boundary and an issuer with a compatible access-token profile.
-2. Implement one durable backend and its repository contracts. Wire complete
-   credential persistence/readback and coordinated refresh; inject crashes around
-   every request-started/secret-saved/commit boundary. Test quota accounting across
-   retries, crashes, token rotation, restore and concurrent callers.
-3. Implement the owner authorization callback/state service and explicit production
-   composition root, keeping all administrative/credential routes off MCP.
-4. Separately approve account setup, credentials and deployment. Verify actual host
-   discovery/PKCE/client registration first with synthetic results, then named
-   budget consent, redacted operations, revoke/reconnect and restart acceptance.
+## Conservative behavior retained
 
-These gates are intentionally visible so that a passing development suite is not
-mistaken for a safe-to-deploy financial connector.
+- Single owner only; no billing, multi-user hosting, financial mutations, arbitrary
+  URL/method tool, bulk export or MCP administration endpoint.
+- Fresh full bounded fetches only; no automatic GET retry, refresh-on-401 retry,
+  stale cache mode or delta sync. Proactive expiry-based refresh is implemented;
+  an upstream 401 returns reconnect guidance without replaying a financial GET.
+- Explicit inclusive transaction date bounds, at most 366 days; pending recorded
+  transactions excluded; scheduled results describe the next upstream occurrence.
+- Inbound verifier accepts signed `at+jwt` / `application/at+jwt` profiles only.
+  Generic ID-token `JWT` profiles and opaque tokens fail closed.
+- SDK loopback Host heuristics are replaced only inside a constructor enforcing
+  explicit host/origin admission. No forwarding header is trusted.
+- Financial content is memory-only. A permitted client can still retain or share
+  returned data; read-only is not a confidentiality guarantee.
+
+## Remaining release gates
+
+1. Review the candidate backend, choose the repository license, issuer/client
+   registration, host, durable volume, protected secret backend and external key
+   authority. Approve their security/backup/retention/cost boundaries.
+2. Implement the selected provider/session/key/backend adapters and the production
+   startup/restore/recovery composition. Verify the actual authenticated callback
+   flow before exposing a listener; independently establish worker termination.
+3. Separately approve account setup, credentials and deployment. Start with
+   synthetic host results, then consent to explicitly named budgets.
+4. Complete operational acceptance: live discovery/PKCE, wrong-identity denial,
+   quota behavior, redacted operations, revocation/reconnect, restore and retention.
+
+There is intentionally no production serving command that guesses these choices.

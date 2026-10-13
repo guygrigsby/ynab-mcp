@@ -9,4 +9,4 @@
 *.key
 coverage.out
 *.test
-budget-mcp
+/budget-mcp

@@ -34,3 +34,12 @@ type QuotaRepository interface {
 	Reserve(context.Context, admission.QuotaKey, string, time.Time) (admission.Reservation, error)
 	RecordCooldown(context.Context, admission.QuotaKey, time.Time, time.Time) error
 }
+
+// ScopedConnectionRepository atomically fences lifecycle metadata transitions
+// against the currently enabled grant as well as connection state. It requires
+// exact owner/connection/lineage/policy version and any requested budget before
+// committing. Revocation cannot race publication of a new credential generation.
+type ScopedConnectionRepository interface {
+	ConnectionRepository
+	CompareAndSwapScoped(context.Context, access.ReadScope, uint64, connection.YNABConnection) error
+}

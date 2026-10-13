@@ -15,6 +15,9 @@ func rateLimited() error  { return inquiry.ErrRateLimited }
 func dataInvalid() error  { return inquiry.ErrDataInvalid }
 func narrowQuery() error  { return inquiry.ErrNarrowQueryRequired }
 func quotaDenied(err error) error {
+	if errors.Is(err, inquiry.ErrUnauthorizedScope) {
+		return unauthorized()
+	}
 	if errors.Is(err, inquiry.ErrRateLimited) {
 		return rateLimited()
 	}

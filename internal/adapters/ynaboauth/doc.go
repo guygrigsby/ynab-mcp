@@ -11,9 +11,10 @@
 // attempt with an uncertain outcome. A returned credential pair must be stored
 // and verified in an approved protected store before committing its generation;
 // this package neither selects nor implements that store. A failed refresh
-// requires reconnect. The opaque in-memory credentials deliberately provide no
-// general serialization or refresh-token export; persistence integration remains
-// a separate, release-blocking boundary.
+// requires reconnect. Credentials now use the application-owned complete bundle;
+// only explicitly named protected-store, fixed-read and OAuth methods export
+// plaintext. A candidate encrypted adapter is available separately, but a
+// production vault/key authority and deployment approval remain release gates.
 //
 // Endpoint and parameter policy follows https://api.ynab.com/ (reviewed
 // 2026-10-13). Token requests use golang.org/x/oauth2 with a fixed authentication

@@ -3,7 +3,6 @@ package ynaboauth
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/guygrigsby/ynab-mcp/internal/application/credentials"
 )
 
 const (
@@ -33,35 +34,11 @@ var (
 	ErrReconnectRequired    = errors.New("YNAB OAuth reconnect required")
 )
 
-// Credentials is an opaque complete access/refresh pair, held only in memory.
-// It is not a domain value or a tool result. Its zero value is unusable.
-// Formatting and JSON are deliberately redacted; the adapter never exports the
-// oauth2.Token, its raw response fields, or the refresh token.
-type Credentials struct {
-	accessToken  string
-	refreshToken string
-	expiresAt    time.Time
-}
+// Credentials remains an alias for source compatibility. The application owns
+// the opaque complete bundle and its narrowly named persistence/OAuth exports.
+type Credentials = credentials.CompleteBundle
 
-func (Credentials) String() string   { return "[redacted YNAB credentials]" }
-func (Credentials) GoString() string { return "[redacted YNAB credentials]" }
-func (Credentials) Format(s fmt.State, _ rune) {
-	_, _ = s.Write([]byte("[redacted YNAB credentials]"))
-}
-func (Credentials) LogValue() slog.Value { return slog.StringValue("[redacted YNAB credentials]") }
-func (Credentials) MarshalJSON() ([]byte, error) {
-	return json.Marshal("[redacted YNAB credentials]")
-}
-
-// ExpiresAt returns the conservative UTC expiration instant, measured from the
-// start of the token request rather than from receipt of its response.
-func (c Credentials) ExpiresAt() time.Time { return c.expiresAt }
-
-// AccessToken is an explicit credential boundary for the fixed-host YNAB read
-// adapter only. Callers must enforce active connection state and credential
-// generation before using it. Never put its result in logs, domain values,
-// financial read ports, MCP arguments or results.
-func (c Credentials) AccessToken() string { return c.accessToken }
+var _ credentials.OAuth = (*Client)(nil)
 
 // Client owns separate credential HTTP configuration. Its configuration, HTTP
 // client and endpoints cannot be changed through MCP or exported options.
@@ -160,7 +137,7 @@ func (c *Client) Exchange(ctx context.Context, code, verifier string) (*Credenti
 // even a timeout can follow successful upstream rotation. Do not retry the old
 // refresh token, or publish the result before protected persistence and CAS.
 func (c *Client) Refresh(ctx context.Context, current *Credentials) (*Credentials, error) {
-	if !c.ready() || ctx == nil || current == nil || !visibleASCII(current.accessToken, maxSecret) || !visibleASCII(current.refreshToken, maxSecret) || current.expiresAt.IsZero() {
+	if !c.ready() || ctx == nil || current == nil || current.Validate() != nil {
 		return nil, ErrInvalidInput
 	}
 	ctx, cancel := c.requestContext(ctx)
@@ -168,7 +145,7 @@ func (c *Client) Refresh(ctx context.Context, current *Credentials) (*Credential
 	started := c.now().UTC()
 	// An empty access token forces one refresh even if the prior access token
 	// is still valid. This one-shot source is immediately discarded.
-	token, err := c.config.TokenSource(ctx, &oauth2.Token{RefreshToken: current.refreshToken}).Token()
+	token, err := c.config.TokenSource(ctx, &oauth2.Token{RefreshToken: current.ExportRefreshTokenForOAuth()}).Token()
 	if err != nil {
 		return nil, ErrReconnectRequired
 	}
@@ -197,7 +174,11 @@ func (c *Client) credentials(token *oauth2.Token, started time.Time) (*Credentia
 	if !c.now().Before(expiresAt) {
 		return nil, ErrInvalidResponse
 	}
-	return &Credentials{accessToken: token.AccessToken, refreshToken: token.RefreshToken, expiresAt: expiresAt}, nil
+	bundle, err := credentials.NewOAuthBundle(token.AccessToken, token.RefreshToken, expiresAt, credentials.ReadOnlyScope)
+	if err != nil {
+		return nil, ErrInvalidResponse
+	}
+	return &bundle, nil
 }
 
 func sanitizedError(err error) error {

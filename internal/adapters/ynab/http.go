@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/guygrigsby/ynab-mcp/internal/domain/access"
+	"github.com/guygrigsby/ynab-mcp/internal/domain/connection"
 )
 
 const (
@@ -93,8 +94,11 @@ func (c *Client) get(ctx context.Context, scope access.ReadScope, route string, 
 	}
 	token, err := c.tokens.AccessToken(ctx, scope)
 	if err != nil {
-		if errors.Is(err, reconnect()) {
+		if errors.Is(err, reconnect()) || errors.Is(err, connection.ErrReconnectRequired) {
 			return reconnect()
+		}
+		if errors.Is(err, access.ErrUnauthorized) || errors.Is(err, connection.ErrNotActive) {
+			return unauthorized()
 		}
 		return unavailable()
 	}

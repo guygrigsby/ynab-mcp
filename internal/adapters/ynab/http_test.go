@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/guygrigsby/ynab-mcp/internal/domain/access"
+	"github.com/guygrigsby/ynab-mcp/internal/domain/connection"
 	"github.com/guygrigsby/ynab-mcp/internal/domain/inquiry"
 )
 
@@ -243,6 +244,17 @@ func TestBodyClosedOnAllResponses(t *testing.T) {
 		_ = c.get(context.Background(), scope(), plansPath, url.Values{}, &out)
 		if !body.closed {
 			t.Fatalf("body not closed status %d", code)
+		}
+	}
+}
+
+func TestLifecycleErrorsAreMappedWithoutUpstreamCalls(t *testing.T) {
+	for _, tt := range []struct{ from, want error }{{connection.ErrReconnectRequired, inquiry.ErrReconnectRequired}, {access.ErrUnauthorized, inquiry.ErrUnauthorizedScope}, {connection.ErrNotActive, inquiry.ErrUnauthorizedScope}} {
+		q := &quotaStub{}
+		c, _ := newClient(tokenFunc(func(context.Context, access.ReadScope) (string, error) { return "", tt.from }), q, rtFunc(func(*http.Request) (*http.Response, error) { t.Fatal("unexpected upstream"); return nil, nil }))
+		var out responseDTO
+		if err := c.get(context.Background(), scope(), plansPath, nil, &out); !errors.Is(err, tt.want) || q.calls.Load() != 0 {
+			t.Fatal("incorrect lifecycle normalization", err)
 		}
 	}
 }

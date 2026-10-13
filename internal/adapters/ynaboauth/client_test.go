@@ -16,6 +16,12 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/guygrigsby/ynab-mcp/internal/adapters/secrets"
+	credentialbundle "github.com/guygrigsby/ynab-mcp/internal/application/credentials"
+	"github.com/guygrigsby/ynab-mcp/internal/domain/connection"
+	"github.com/tink-crypto/tink-go/v2/aead"
+	"github.com/tink-crypto/tink-go/v2/keyset"
 )
 
 const (
@@ -155,7 +161,7 @@ func TestExchangeUsesPKCEFixedDestinationAndOwnedHTTPClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || credentials.AccessToken() != syntheticAccess || credentials.refreshToken != syntheticRefresh || !credentials.ExpiresAt().Equal(syntheticNow.Add(2*time.Hour)) {
+	if calls != 1 || credentials.ExportAccessTokenForYNABRead() != syntheticAccess || credentials.ExportRefreshTokenForOAuth() != syntheticRefresh || !credentials.ExpiresAt().Equal(syntheticNow.Add(2*time.Hour)) {
 		t.Fatalf("unexpected exchange result or attempt count: %d, %v", calls, credentials)
 	}
 }
@@ -173,12 +179,12 @@ func TestRefreshIsExplicitSingleAttemptAndRotatesCompletePair(t *testing.T) {
 		}
 		return response(200, validResponse), nil
 	}))
-	prior := &Credentials{accessToken: "synthetic-old-access", refreshToken: "synthetic-old-refresh", expiresAt: syntheticNow.Add(time.Hour)}
+	prior := testBundle(t, "synthetic-old-access", "synthetic-old-refresh", syntheticNow.Add(time.Hour))
 	got, err := c.Refresh(context.Background(), prior)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || got.AccessToken() != syntheticAccess || got.refreshToken != syntheticRefresh || prior.refreshToken != "synthetic-old-refresh" {
+	if calls != 1 || got.ExportAccessTokenForYNABRead() != syntheticAccess || got.ExportRefreshTokenForOAuth() != syntheticRefresh || prior.ExportRefreshTokenForOAuth() != "synthetic-old-refresh" {
 		t.Fatal("refresh did not preserve the prior immutable complete generation")
 	}
 }
@@ -206,7 +212,7 @@ func TestRefreshFailureNeverRetriesOrReturnsUnsafeErrors(t *testing.T) {
 		t.Run(failure.name, func(t *testing.T) {
 			calls := 0
 			c := testClient(t, roundTripFunc(func(r *http.Request) (*http.Response, error) { calls++; return failure.rt(r) }))
-			prior := &Credentials{accessToken: syntheticAccess, refreshToken: syntheticRefresh, expiresAt: syntheticNow}
+			prior := testBundle(t, syntheticAccess, syntheticRefresh, syntheticNow)
 			got, err := c.Refresh(context.Background(), prior)
 			if got != nil || !errors.Is(err, ErrReconnectRequired) || calls != 1 {
 				t.Fatalf("refresh = %v, %v, attempts=%d", got, err, calls)
@@ -248,7 +254,7 @@ func TestInvalidInputAndZeroValuesNeverSend(t *testing.T) {
 	if _, err := c.Exchange(context.Background(), syntheticCode, "short-verifier"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatal(err)
 	}
-	for _, credentials := range []*Credentials{nil, {}, {accessToken: syntheticAccess, refreshToken: syntheticRefresh}} {
+	for _, credentials := range []*Credentials{nil, {}} {
 		if _, err := c.Refresh(context.Background(), credentials); !errors.Is(err, ErrInvalidInput) {
 			t.Fatal(err)
 		}
@@ -273,5 +279,88 @@ func assertSanitized(t *testing.T, value any) {
 		if strings.Contains(raw, secret) {
 			t.Fatal("sensitive synthetic marker was exposed")
 		}
+	}
+}
+
+func testBundle(t *testing.T, access, refresh string, expires time.Time) *Credentials {
+	t.Helper()
+	b, err := credentialbundle.NewOAuthBundle(access, refresh, expires, credentialbundle.ReadOnlyScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &b
+}
+
+func TestOAuthBundleRoundTripsProtectedStoreBeforeRefresh(t *testing.T) {
+	ctx := context.Background()
+	handle, err := keyset.NewHandle(aead.AES256GCMKeyTemplate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	primitive, err := aead.New(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := secrets.NewMemoryBlobStoreForTesting()
+	firstStore, err := secrets.NewEncryptedStore(backend, primitive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	c := testClient(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			if r.PostForm.Get("grant_type") != "authorization_code" {
+				t.Fatal("expected one initial exchange")
+			}
+			return response(http.StatusOK, validResponse), nil
+		}
+		if calls != 2 || r.PostForm.Get("grant_type") != "refresh_token" || r.PostForm.Get("refresh_token") != syntheticRefresh {
+			t.Fatal("stored complete refresh token did not reach one-shot refresh")
+		}
+		return response(http.StatusOK, `{"access_token":"synthetic-rotated-access","refresh_token":"synthetic-rotated-refresh","token_type":"bearer","expires_in":7200,"scope":"read-only"}`), nil
+	}))
+	initial, err := c.Exchange(ctx, syntheticCode, syntheticVerifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := connection.CredentialRef{Provider: "synthetic-vault", Location: "synthetic-lineage", ImmutableVersion: "one"}
+	if err := firstStore.PutImmutable(ctx, ref, *initial); err != nil {
+		t.Fatal(err)
+	}
+	reconstructed, err := secrets.NewEncryptedStore(backend, primitive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := reconstructed.Read(ctx, ref)
+	if err != nil || !recovered.Equal(*initial) {
+		t.Fatal("lost complete credential pair across adapter reconstruction")
+	}
+	rotated, err := c.Refresh(ctx, &recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := ref
+	candidate.ImmutableVersion = "two"
+	if err := reconstructed.PutImmutable(ctx, candidate, *rotated); err != nil {
+		t.Fatal(err)
+	}
+	final, err := reconstructed.Read(ctx, candidate)
+	if err != nil || !final.Equal(*rotated) || final.Equal(recovered) || calls != 2 {
+		t.Fatal("rotated complete generation was not saved exactly once")
+	}
+	old, err := reconstructed.Read(ctx, ref)
+	if err != nil || !old.Equal(recovered) {
+		t.Fatal("saving candidate changed old immutable generation")
+	}
+	for _, reference := range []connection.CredentialRef{ref, candidate} {
+		raw, err := backend.Read(ctx, reference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSanitized(t, string(raw))
 	}
 }
