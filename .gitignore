@@ -1,0 +1,12 @@
+# Local secrets and private operational state are never repository content.
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite*
+*.pem
+*.key
+coverage.out
+*.test
+budget-mcp

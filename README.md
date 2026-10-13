@@ -1,46 +1,52 @@
 # Budget MCP for YNAB
 
-Design for a small, single-owner, read-only YNAB connector written in Go and intended for dot through a custom remote MCP connection.
+A single-owner, read-only Go MCP resource-server foundation for bounded access to YNAB financial information.
 
-**Status: documentation only.** There is no runnable server, dependency manifest, test suite or deployment in this initial repository. The tool names, package layout, limits and CI checks in the design are proposals for a later approved implementation.
+**Status: initial implementation, synthetic tests only. Not production-ready or deployed.** This branch is stacked on the proposed [design](docs/DESIGN.md). It contains real protocol, domain, authorization, read-adapter and snapshot code, but deliberately has no production executable or selected state/secret-store adapter. There are no live credentials or account connections.
 
-Read the [design](docs/DESIGN.md) for the domain model, bounded contexts, aggregate invariants, financial read models, application ports, concrete storage proposals, authorization boundaries, tool contracts, threat model, test plan and delivery gates.
+## Implemented
 
-## Intended capabilities
+- Exactly eight tools: `list_budgets`, `get_budget`, `list_accounts`, `list_categories`, `get_month`, `list_transactions`, `get_transaction`, `list_scheduled_transactions`
+- Official Go MCP SDK with stateless Streamable HTTP; strict argument parsing and read-only inventory
+- Exact issuer/subject/tenant policy, resource audience and scope enforcement; JOSE access-token verification, bounded trusted JWKS and protected-resource metadata
+- Explicit host/origin allowlists; owner checks on initialization, discovery and calls; request and response limits
+- Fixed-host YNAB GET adapter with explicit projections, mandatory quota-reservation port, no redirect or legacy-route fallback
+- Integer milliunit money with exact string serialization, validated dates/IDs, split and transfer semantics, distinct recorded/scheduled models
+- Bounded memory-only immutable snapshots, opaque scope-bound cursors, absolute expiry, deterministic replay and revocation rechecks
+- Pure connection-refresh/fencing and quota domain state machines, plus a separate fixed-destination OAuth exchange adapter
 
-- Read allowed budgets, account balances, categories and monthly summaries
-- Query transactions and scheduled transactions with explicit bounds
-- Preserve exact money values, freshness and coverage
-- Deny every write operation and every budget outside the configured allowlist
+Read [implementation status and remaining gates](docs/IMPLEMENTATION.md) before integrating or running against an account. The design remains the target contract; this foundation does not claim to implement every operational acceptance criterion.
 
-## Proposed approach
+## Development
 
-Use the official Go MCP SDK with Streamable HTTP. A mature OAuth issuer authenticates the OpenAI host; separate read-only YNAB OAuth credentials authorize upstream reads. The server validates the approved owner and resource audience on every request. Tokens and financial content never belong in logs.
+Use Go **1.27.2** or newer. All automated tests use generated keys and synthetic financial fixtures. Nothing requires a live account or API token.
 
-For initial connectivity, use approved authenticated HTTPS or a secure MCP tunnel whose support is verified. Optional tsnet can provide private transport but does not by itself give dot access to a tailnet.
+```sh
+make check
+make fuzz
+make vuln
+```
 
-The proposed application display name is **Budget MCP for YNAB**. Application and domain branding must be reviewed before release.
+`make check` runs formatting checks, vet, unit/integration tests, the race detector, and package builds. The integration test runs the official SDK client against an in-process Streamable HTTP server with synthetic signed access tokens and a synthetic inquiry gateway. Separate adapter tests exercise fixed YNAB HTTP routes and mapping.
 
-## Domain and storage design
+No GitHub Actions workflow is activated by this implementation. No command starts a public listener, enrolls a network, configures an issuer or creates credentials. `internal/bootstrap.NewHandler` requires explicit state, key, inquiry and snapshot ports; a deployment composition root remains gated on the decisions below.
 
-YNAB remains the source of truth for budgets, accounts, categories and transactions. The connector owns access grants, connection/refresh state, request admission and bounded read snapshots. It does not implement a local financial ledger or financial write aggregates.
+## Architecture
 
-The design separates durable private control metadata and protected secret references from ephemeral financial data. It includes a candidate SQLite schema, a Firestore alternative, refresh crash-recovery rules and domain/repository acceptance tests. The storage backend is not yet selected; financial snapshots and cursors remain in memory for v1.
+Dependencies point inward: adapters → application → domain. Financial read models are upstream projections, not local accounting aggregates. Financial snapshots never go to disk. The metadata repository contracts are separate from protected credentials; no storage backend or credential encryption scheme has been silently chosen.
 
-## Next decisions
+The application maps one exact owner identity to one connection and explicit budget IDs. There is no multi-user hosting, billing, mutation tool, arbitrary URL/method parameter, bulk export or remote administration endpoint.
 
-Choose the issuer, reachable endpoint, upstream credential approach, durable-state backend, secret store and initial budget allowlist. Account grants, credentials, CI activation and deployment are not part of the documentation delivery.
+## Before live use
 
-## Security boundary
+Select and approve the issuer/client registration, endpoint, upstream read-only OAuth application, durable metadata backend, protected secret store and named budget allowlist. Implement and test durable refresh orchestration, restart recovery and quota transactions, then test the actual host's authorization flow. Deployment, account permissions, live credentials and release remain separate approval gates.
 
-Read-only access still exposes private financial information. The eventual server must minimize fields, reject unauthorized identities, use bounded results, and treat payee names, notes and memos as untrusted data. It cannot guarantee what the client does with results after receiving them.
+This is an independent implementation. No third-party connector implementation has been copied. A repository license must be selected before inviting reuse. The application display name is **Budget MCP for YNAB**; review application/domain branding requirements before release.
 
-## Primary references
+## References
 
+- [Design and threat model](docs/DESIGN.md)
 - [YNAB API](https://api.ynab.com/)
 - [Official Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk)
-- [OpenAI MCP authentication](https://developers.openai.com/plugins/build/auth)
+- [OpenAI authentication guide](https://developers.openai.com/plugins/build/auth)
 - [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
-- [Tailscale tsnet](https://tailscale.com/docs/features/tsnet)
-
-Documentation reviewed 13 October 2026. This is an independent design; no existing connector code has been copied.
