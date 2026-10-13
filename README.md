@@ -4,7 +4,7 @@ Design for a small, single-owner, read-only YNAB connector written in Go and int
 
 **Status: documentation only.** There is no runnable server, dependency manifest, test suite or deployment in this initial repository. The tool names, package layout, limits and CI checks in the design are proposals for a later approved implementation.
 
-Read the [design](docs/DESIGN.md) for the architecture, authorization boundaries, tool contracts, threat model, test plan and delivery gates.
+Read the [design](docs/DESIGN.md) for the domain model, bounded contexts, aggregate invariants, financial read models, application ports, concrete storage proposals, authorization boundaries, tool contracts, threat model, test plan and delivery gates.
 
 ## Intended capabilities
 
@@ -21,9 +21,15 @@ For initial connectivity, use approved authenticated HTTPS or a secure MCP tunne
 
 The proposed application display name is **Budget MCP for YNAB**. Application and domain branding must be reviewed before release.
 
+## Domain and storage design
+
+YNAB remains the source of truth for budgets, accounts, categories and transactions. The connector owns access grants, connection/refresh state, request admission and bounded read snapshots. It does not implement a local financial ledger or financial write aggregates.
+
+The design separates durable private control metadata and protected secret references from ephemeral financial data. It includes a candidate SQLite schema, a Firestore alternative, refresh crash-recovery rules and domain/repository acceptance tests. The storage backend is not yet selected; financial snapshots and cursors remain in memory for v1.
+
 ## Next decisions
 
-Choose the issuer, reachable endpoint, upstream credential approach, secret store and initial budget allowlist. Account grants, credentials, CI activation and deployment are not part of the documentation delivery.
+Choose the issuer, reachable endpoint, upstream credential approach, durable-state backend, secret store and initial budget allowlist. Account grants, credentials, CI activation and deployment are not part of the documentation delivery.
 
 ## Security boundary
 
